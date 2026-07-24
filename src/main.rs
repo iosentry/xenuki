@@ -1,7 +1,12 @@
 use clap::Parser;
 use std::path::PathBuf;
+use std::fs;
+use std::path::Path;
 
-/// A UKI Kernel Image fro Xen dom,0
+
+/// A UKI Kernel Image for a Xen dom0 Linux host
+/// Learning RUST w/ Claude
+/// Date: Fri Jul 24 08:01:10 AM CDT 2026
 
 #[derive(Parser, Debug)]
 #[command(name = "uki-packer", version, about)]
@@ -11,9 +16,9 @@ struct Args {
     #[arg(short, long)]
     kernel: PathBuf,
 
-    /// Path to initrd
+    /// Path to ramfs
     #[arg(short, long)]
-    initrd: PathBuf,
+    ramfs: PathBuf,
 
     /// Path to kernel cmdline.d
     #[arg(short, long)]
@@ -25,11 +30,13 @@ struct Args {
 
     /// Path to systemd-boot efi boot stub
     #[arg(short,long)]
-    stub: PathBuf,
-}
+    efistub: PathBuf,
 
-use std::fs;
-use std::path::Path;
+    /// Path to kernel cmdline.d
+    #[arg(short, long)]
+    xencfg: PathBuf,
+
+}
 
 fn build_cmdline(dir: &Path) -> std::io::Result<String> {
     
@@ -118,8 +125,8 @@ fn main() {
         .expect("failed to read kernel image");
 
 
-    let initrd_data = read_binary_file(&args.initrd)
-        .expect("failed to read initrdi mage");
+    let ramfs_data = read_binary_file(&args.ramfs)
+        .expect("failed to read ramfsi mage");
 
     let stub_data = read_binary_file(&args.stub)
         .expect("failed to read the EFI boot stub");
@@ -138,7 +145,7 @@ fn main() {
 
     println!("Final cmdline: {}", cmdline);
     println!("Kernel Size: {} bytes", kernel_data.len());
-    println!("Initrd Size: {} bytes", initrd_data.len());
+    println!("Initrd Size: {} bytes", ramfs_data.len());
 
     
 }
