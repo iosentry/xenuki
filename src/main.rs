@@ -194,6 +194,57 @@ fn parse_optional_header(data: &[u8], e_lfanew: u32) -> OptionalHeaderInfo {
     }
 }
 
+fn align_up(value: u32, alignment: u32) -> u32 {
+    (value + alignment - 1) / alignment * alignment
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct NewSection {
+    name: String,
+    data: Vec<u8>,
+}
+
+fn build_section_headers(
+    new_sections: &[NewSection],
+    last_va_end: u32,
+    last_raw_end: u32,
+    section_alignment: u32,
+    file_alignment: u32,
+) -> Vec<SectionHeader> {
+    let mut headers = Vec::new();
+    let mut next_va = align_up(last_va_end, section_alignment);
+    let mut next_raw = align_up(last_raw_end, file_alignment);
+
+    for section in new_sections {
+        let mut name_bytes = [0u8; 8];
+        let name_slice = section.name.as_bytes();
+        let len = name_slice.len().min(8);
+        name_bytes[..len].copy_from_slice(&name_slice[..len]);
+
+        let raw_size = align_up(section.data.len() as u32, file_alignment);
+        let virtual_size = section.data.len() as u32;
+
+        headers.push(SectionHeader {
+            name: name_bytes,
+            virtual_size,
+            virtual_address: next_va,
+            size_of_raw_data: raw_size,
+            pointer_to_raw_data: next_raw,
+            pointer_to_relocations: 0,
+            pointer_to_linenumbers: 0,
+            number_of_relocations: 0,
+            number_of_linenumbers: 0,
+            characteristics: 0x40000040, // IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ
+        });
+
+        next_va = align_up(next_va + virtual_size, section_alignment);
+        next_raw = align_up(next_raw + raw_size, file_alignment);
+    }
+
+    headers
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -235,12 +286,40 @@ fn main() {
     println!("--- Section Table ---");
     for sec in &mut sections {
         println!(
-            "{:<10}\t\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
+            "{:<10}\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
             section_name(&sec, &efistub_data, &coff_header),
             sec.virtual_address,
             sec.virtual_size,
             sec.pointer_to_raw_data,
             sec.size_of_raw_data
+        );
+    }
+
+    let new_sections = vec![
+        NewSection { name: ".config".to_string(), data: fs::read(&args.config).expect("read config") },
+        NewSection { name: ".kernel".to_string(), data: kernel_data.clone() },
+        NewSection { name: ".ramdisk".to_string(), data: initrd_data.clone() },
+        NewSection { name: ".ucode".to_string(), data: ucode_data.clone() },
+    ];
+
+    // find the last existing section (.reloc) to compute where new ones begin
+    let last = &sections[sections.len() - 1]; // assuming you've collected parsed sections into `sections: Vec<SectionHeader>`
+    let last_va_end = last.virtual_address + last.virtual_size;
+    let last_raw_end = last.pointer_to_raw_data + last.size_of_raw_data;
+
+    let new_headers = build_section_headers(
+        &new_sections,
+        last_va_end,
+        last_raw_end,
+        opt_header.section_alignment,
+        opt_header.file_alignment,
+    );
+
+    for h in &new_headers {
+        println!(
+            "{:<10} VA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
+            section_name(h, &stub_data, &coff_header),
+            h.virtual_address, h.virtual_size, h.pointer_to_raw_data, h.size_of_raw_data
         );
     }
 
