@@ -317,7 +317,7 @@ fn build_output(
 
     // 3. Write existing section headers, with PointerToRawData shifted
     for section in existing_sections {
-        let mut patched = section.clone_with_shifted_ptr(shift); // see note below
+        let patched = section.clone_with_shifted_ptr(shift); // see note below
         out.extend_from_slice(&section_header_bytes(&patched));
     }
 
