@@ -140,10 +140,10 @@ struct SectionHeader {
 
 impl SectionHeader {
     fn clone_with_shifted_ptr(&self, shift: u32) -> SectionHeader {
-        let mut copy = self.clone();
-        if copy.size_of_raw_data == 0 {
-            copy
+        if self.size_of_raw_data == 0 {
+           self.clone()
         } else {
+            let mut copy = self.clone();
             copy.pointer_to_raw_data += shift;
             copy
         }
@@ -231,7 +231,8 @@ fn build_section_headers(
     last_raw_end: u32,
     section_alignment: u32,
     file_alignment: u32,
-) -> Vec<SectionHeader> {
+    ) -> Vec<SectionHeader> {
+
     let mut headers = Vec::new();
     let mut next_va = align_up(last_va_end, section_alignment);
     let mut next_raw = align_up(last_raw_end, file_alignment);
@@ -434,15 +435,7 @@ fn main() -> std::io::Result<()> {
         );
     }
 
-    let new_number_of_sections = coff_header.number_of_sections + new_headers.len() as u16;
-
-    let last_new = new_headers.last().unwrap();
-    let new_size_of_image = align_up(
-        last_new.virtual_address + last_new.virtual_size,
-        opt_header.section_alignment,
-    );
-
-    let xenuki: Vec<u8> = build_output(
+    let xenuki = build_output(
         &efistub_data, 
         &dos_header, 
         &coff_header, 
@@ -452,6 +445,14 @@ fn main() -> std::io::Result<()> {
         &new_headers,
         &new_sections);
 
+/*    let new_number_of_sections = coff_header.number_of_sections + new_headers.len() as u16;
+
+    let last_new = new_headers.last().unwrap();
+    let new_size_of_image = align_up(
+        last_new.virtual_address + last_new.virtual_size,
+        opt_header.section_alignment,
+    );
+*/
     fs::write(&args.outfile, xenuki)?;
     Ok(())
 }
