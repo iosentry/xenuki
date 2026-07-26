@@ -124,7 +124,7 @@ impl SectionHeader {
            self.clone()
         } else {
             let mut cp = self.clone();
-            cp.pointer_to_raw_data += shift;
+            cp.pointer_to_raw_data += 0;
             cp
         }
     }   
@@ -159,12 +159,14 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
         .trim_end_matches('\0')
         .to_string();
     let string_table_offset: usize = offset_str.parse().unwrap_or(0);
-    println!("string_table_start: {:#")
+   
     // String table follows the symbol table: each symbol entry is 18 bytes
     let symbol_table_start = coff.pointer_to_symbol_table as usize;
-    let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18) + 160;
-    let name_start = string_table_start + string_table_offset;
+    let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18);
 
+    let name_start = string_table_start + string_table_offset;
+    println!("string_table_start: {:#x}", string_table_start);
+    println!("name_start: {:#x}", name_start);
     let end = data[name_start..]
         .iter()
         .position(|&b| b == 0)
@@ -286,7 +288,7 @@ fn build_output(
     let old_headers_end = opt_header.size_of_headers;
     let new_size_of_headers = align_up(old_headers_end + header_growth as u32, file_alignment);
     let shift = new_size_of_headers - old_headers_end; // how far ALL existing raw data moves
-    
+    println!("shifting: {:#x}", shift);
     // 2. Start building the output buffer
     let mut out = Vec::new();
 
@@ -304,8 +306,7 @@ fn build_output(
     //    start, and new sections are appended at the very end, their offsets need the
     //    same shift applied too)
     for header in new_headers {
-        let mut patched = header.clone();
-        patched.pointer_to_raw_data += shift;
+        let patched = header.clone_with_shifted_ptr(shift);
         out.extend_from_slice(&section_header_bytes(&patched));
     }
 
@@ -384,7 +385,7 @@ fn main() -> std::io::Result<()> {
     println!("{:#?}", coff_header);
 
     let sect_offset = section_table_offset(dos_header.e_lfanew, &coff_header);
-    println!("sect_offset: {:#?}", sect_offset);
+    println!("sect_offset: {:#x}", sect_offset);
     let sect_end = sect_offset + (coff_header.number_of_sections as usize * 40); // each section header is 40 bytes
     println!("Section table: {:#x} .. {:#x}", sect_offset, sect_end);
     println!("Number of sections: {}", coff_header.number_of_sections);
@@ -409,7 +410,7 @@ fn main() -> std::io::Result<()> {
         NewSection { name: ".ramdisk".to_string(), data: ramdisk_data.clone() },
         NewSection { name: ".ucode".to_string(), data: ucode_data.clone() },
     ];
-
+    
     let new_headers = build_section_headers(
         &new_sections,
         last_va_end,
@@ -442,6 +443,7 @@ fn main() -> std::io::Result<()> {
         &sections,
         &new_headers,
         &new_sections);
+
 
     fs::write(dom0_uki, xenuki_data)?;
     Ok(())
