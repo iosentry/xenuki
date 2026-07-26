@@ -1,13 +1,18 @@
-///                 This code generates a monolithic UEFI / SecureBoot compliant
-///                 Xen Hypervisor Domain0 Linux Unified Kernel Image (UKI)
-///                 This design allows provides for the validation and assurance 
-///                 initramfs contents by packing the entire hypervisor and host OS
-///                 components together where thet can be signed with the Administrators
-///                 SecureBoot Keys.
+///                 This code generates a standalone monolithic bootable EFI executable 
+///                 file that enables the opportunity for SecureBoot enforcement on
+///                 UEFI based systems that require heightened levels security vigilance.
+///
+///                 The binary file generated is a 64-bit PE32+ directly executable file
+///                 conforming to Microsoft's Portable Executable (PE) file format. The
+///                 hybrid Unified Kernel Image (UKI) generated provides a complete Xen
+///                 Type-1 Hypervisor system as well as the administrative Domain0's Linux
+///                 kernel, initramfs, cmdline, etc. needed to run a fully funtional Xen
+///                 dom0. This architecture and design provides for the most effective use
+///                 of SecureBoot integrity validation. Even the kernel's and hypervisor's
+///                 initramfs contents are insured as they are packed directly into the binary.
 ///  
-///                 roman@systemwarfare.net
 ///                 Date: Fri Jul 24 08:01:10 AM CDT 2026
-
+///                 Roman Hunt <roman@systemwarfare.net>
 use clap::Parser;
 use std::path::PathBuf;
 use std::fs;
@@ -25,14 +30,14 @@ struct Args {
     ramdisk: PathBuf,
 
     /// Path to kernel cmdline.d
- //   #[arg(short, long)]
- //   cmdline: PathBuf,
+//  #[arg(short, long)]
+//  cmdline: PathBuf,
 
     /// UKI output filename
     #[arg(short, long)]
     outfile: PathBuf,
 
-    /// Path to systemd-boot efi boot stub
+    /// Path to xen.efi boot stub
     #[arg(short,long)]
     efistub: PathBuf,
 
@@ -143,9 +148,9 @@ impl SectionHeader {
         if self.size_of_raw_data == 0 {
            self.clone()
         } else {
-            let mut copy = self.clone();
-            copy.pointer_to_raw_data += shift;
-            copy
+            let mut cp = self.clone();
+            cp.pointer_to_raw_data += shift;
+            cp
         }
     }   
 }
@@ -182,7 +187,7 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
 
     // String table follows the symbol table: each symbol entry is 18 bytes
     let symbol_table_start = coff.pointer_to_symbol_table as usize;
-    let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18);
+    let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18) + 160;
     let name_start = string_table_start + string_table_offset;
 
     let end = data[name_start..]
@@ -262,7 +267,6 @@ fn build_section_headers(
         next_va = align_up(next_va + virtual_size, section_alignment);
         next_raw = align_up(next_raw + raw_size, file_alignment);
     }
-
     headers
 }
 
@@ -273,7 +277,6 @@ fn patch_u16(buf: &mut Vec<u8>, offset: usize, value: u16) {
 fn patch_u32(buf: &mut Vec<u8>, offset: usize, value: u32) {
     buf[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
-
 
 fn section_header_bytes(h: &SectionHeader) -> [u8; 40] {
     let mut buf = [0u8; 40];
@@ -290,17 +293,17 @@ fn section_header_bytes(h: &SectionHeader) -> [u8; 40] {
     buf
 }
 
-
 fn build_output(
-    efistub_data: &[u8],
-    dos_header: &DosHeader,
-    coff_header: &CoffHeader,
-    opt_header: &OptionalHeaderInfo,
-    sect_offset: usize,
-    existing_sections: &[SectionHeader],
-    new_headers: &[SectionHeader],
-    new_sections: &[NewSection],
-) -> Vec<u8> {
+        efistub_data: &[u8],
+        dos_header: &DosHeader,
+        coff_header: &CoffHeader,
+        opt_header: &OptionalHeaderInfo,
+        sect_offset: usize,
+        existing_sections: &[SectionHeader],
+        new_headers: &[SectionHeader],
+        new_sections: &[NewSection],
+        ) -> Vec<u8> {
+
     let file_alignment = opt_header.file_alignment;
     let header_growth = new_headers.len() * 40;
 
@@ -308,8 +311,7 @@ fn build_output(
     let old_headers_end = opt_header.size_of_headers;
     let new_size_of_headers = align_up(old_headers_end + header_growth as u32, file_alignment);
     let shift = new_size_of_headers - old_headers_end; // how far ALL existing raw data moves
-    println!("SHIFTING: {shift}");
-
+    
     // 2. Start building the output buffer
     let mut out = Vec::new();
 
@@ -358,9 +360,19 @@ fn build_output(
     let coff_base = dos_header.e_lfanew as usize + 4;
     patch_u16(&mut out, coff_base + 2, coff_header.number_of_sections + new_headers.len() as u16);
 
+    // PointerToSymbolTable lives at offset +12 within the COFF header (after signature+machine+numsections+timestamp)
+    if coff_header.pointer_to_symbol_table != 0 {
+        patch_u32(&mut out, coff_base + 12, coff_header.pointer_to_symbol_table + shift);
+    }
+    
     let opt_base = dos_header.e_lfanew as usize + 24;
-    let last = new_headers.last().unwrap();
-    let new_size_of_image = align_up(last.virtual_address + last.virtual_size, opt_header.section_alignment);
+    
+    let last_new = new_headers.last().unwrap();
+ 
+    let new_size_of_image = align_up(
+            last_new.virtual_address + last_new.virtual_size,
+            opt_header.section_alignment,
+            );
     patch_u32(&mut out, opt_base + 56, new_size_of_image);
     patch_u32(&mut out, opt_base + 60, new_size_of_headers);
 
@@ -372,8 +384,10 @@ fn main() -> std::io::Result<()> {
 
     let mut sections: Vec<SectionHeader> = Vec::new();
 
-//    let cmdline = build_cmdline(&args.cmdline)
-//        .expect ("failed to read the cmdline.d directory");
+/*    let cmdline = build_cmdline(&args.cmdline)
+      .expect ("failed to read the cmdline.d directory"); */
+
+    let dom0_uki: PathBuf = args.outfile;
 
     let kernel_data = read_binary_file(&args.kernel)
         .expect("failed to read kernel image");
@@ -395,6 +409,7 @@ fn main() -> std::io::Result<()> {
     println!("{:#?}", coff_header);
 
     let sect_offset = section_table_offset(dos_header.e_lfanew, &coff_header);
+    println!("sect_offset: {:#?}", sect_offset);
     let sect_end = sect_offset + (coff_header.number_of_sections as usize * 40); // each section header is 40 bytes
     println!("Section table: {:#x} .. {:#x}", sect_offset, sect_end);
     println!("Number of sections: {}", coff_header.number_of_sections);
@@ -407,17 +422,18 @@ fn main() -> std::io::Result<()> {
         sections.push(parse_section_header(&efistub_data, entry_offset));
     }
 
+    // find the last existing section (.reloc) to compute where new ones begin
+    let last = &sections[sections.len() - 1]; // assuming you've collected parsed sections into `sections: Vec<SectionHeader>`
+    let last_va_end = last.virtual_address + last.virtual_size;
+    let last_raw_end = last.pointer_to_raw_data + last.size_of_raw_data;
+    println!("last_raw_end: {:#x}", last_raw_end);
+
     let new_sections = vec![
         NewSection { name: ".config".to_string(), data: fs::read(&args.xencfg).expect("read config") },
         NewSection { name: ".kernel".to_string(), data: kernel_data.clone() },
         NewSection { name: ".ramdisk".to_string(), data: ramdisk_data.clone() },
         NewSection { name: ".ucode".to_string(), data: ucode_data.clone() },
     ];
-
-    // find the last existing section (.reloc) to compute where new ones begin
-    let last = &sections[sections.len() - 1]; // assuming you've collected parsed sections into `sections: Vec<SectionHeader>`
-    let last_va_end = last.virtual_address + last.virtual_size;
-    let last_raw_end = last.pointer_to_raw_data + last.size_of_raw_data;
 
     let new_headers = build_section_headers(
         &new_sections,
@@ -427,15 +443,22 @@ fn main() -> std::io::Result<()> {
         opt_header.file_alignment,
     );
 
-    for h in &new_headers {
+    for s in &sections {
         println!(
             "{:<10} VA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
+            section_name(s, &efistub_data, &coff_header),
+            s.virtual_address, s.virtual_size, s.pointer_to_raw_data, s.size_of_raw_data
+        );
+    }
+    for h in &new_headers {
+        println!(
+            "{:<10}\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
             section_name(h, &efistub_data, &coff_header),
             h.virtual_address, h.virtual_size, h.pointer_to_raw_data, h.size_of_raw_data
         );
     }
 
-    let xenuki = build_output(
+    let xenuki_data = build_output(
         &efistub_data, 
         &dos_header, 
         &coff_header, 
@@ -445,14 +468,6 @@ fn main() -> std::io::Result<()> {
         &new_headers,
         &new_sections);
 
-/*    let new_number_of_sections = coff_header.number_of_sections + new_headers.len() as u16;
-
-    let last_new = new_headers.last().unwrap();
-    let new_size_of_image = align_up(
-        last_new.virtual_address + last_new.virtual_size,
-        opt_header.section_alignment,
-    );
-*/
-    fs::write(&args.outfile, xenuki)?;
+    fs::write(dom0_uki, xenuki_data)?;
     Ok(())
 }
