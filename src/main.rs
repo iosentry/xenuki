@@ -51,31 +51,6 @@ struct Args {
 
 }
 
-/*
-fn build_cmdline(dir: &Path) -> std::io::Result<String> {
-    
-    // read dirents - this call can fail, hense Result
-
-    let mut entries: Vec<PathBuf> = fs::read_dir(dir)?
-        .filter_map(|entry| entry.ok())            // skip entries that errored mid -iteration
-        .map(|entry| entry.path())                      // DirEnt -> PathBuf
-        .filter(|path| path.is_file())                  // Skip subdirs
-        .collect();
-
-    // sort lexicographically by full path 
-    entries.sort();
-
-    // read files etc
-    let mut fragments: Vec<String> = Vec::new();
-    for path in &entries {
-        let contents = fs::read_to_string(path)?;
-        fragments.push(contents.trim().to_string());
-    }
-
-    Ok(fragments.join(" "))
-}
-*/
-
 fn read_binary_file(path: &Path) -> std::io::Result<Vec<u8>> {
     fs::read(path)
 }
@@ -184,7 +159,7 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
         .trim_end_matches('\0')
         .to_string();
     let string_table_offset: usize = offset_str.parse().unwrap_or(0);
-
+    println!("string_table_start: {:#")
     // String table follows the symbol table: each symbol entry is 18 bytes
     let symbol_table_start = coff.pointer_to_symbol_table as usize;
     let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18) + 160;
@@ -362,7 +337,7 @@ fn build_output(
 
     // PointerToSymbolTable lives at offset +12 within the COFF header (after signature+machine+numsections+timestamp)
     if coff_header.pointer_to_symbol_table != 0 {
-        patch_u32(&mut out, coff_base + 12, coff_header.pointer_to_symbol_table + shift);
+        patch_u32(&mut out, coff_base + 12, coff_header.pointer_to_symbol_table);
     }
     
     let opt_base = dos_header.e_lfanew as usize + 24;
