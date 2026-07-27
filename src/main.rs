@@ -15,11 +15,11 @@
 ///                 Roman Hunt <roman@systemwarfare.net>
 use clap::Parser;
 use std::path::PathBuf;
-use std::fs;
 use std::path::Path;
+use std::fs;
 
 #[derive(Parser, Debug)]
-#[command(name = "uki-packer", version, about)]
+#[command(name = "xenuki", version, about)]
 struct Args {
     /// Path top kernel img
     #[arg(short, long)]
@@ -45,7 +45,7 @@ struct Args {
     #[arg(short, long)]
     xencfg: PathBuf,
 
-    /// Path top processor microcode img
+    /// Path to processor microcode img
     #[arg(short, long)]
     ucode: PathBuf,
 
@@ -53,6 +53,10 @@ struct Args {
 
 fn read_binary_file(path: &Path) -> std::io::Result<Vec<u8>> {
     fs::read(path)
+}
+
+fn write_binary_file(path: &Path, contents: &[u8]) {
+    fs::write(path, contents).expect("write failure")
 }
 
 #[repr(C)]
@@ -124,7 +128,7 @@ impl SectionHeader {
            self.clone()
         } else {
             let mut cp = self.clone();
-            cp.pointer_to_raw_data += 0;
+            cp.pointer_to_raw_data += shift;
             cp
         }
     }   
@@ -152,21 +156,19 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
     if raw[0] != b'/' {
         let end = raw.iter().position(|&b| b == 0).unwrap_or(8);
         return String::from_utf8_lossy(&raw[..end]).to_string();
-    }
-
-    // Long name: "/N" where N is a decimal offset into the string table
-    let offset_str = String::from_utf8_lossy(&raw[1..])
-        .trim_end_matches('\0')
-        .to_string();
-    let string_table_offset: usize = offset_str.parse().unwrap_or(0);
+    } else {
+        // Long name: "/N" where N is a decimal offset into the string table
+        let offset_str = String::from_utf8_lossy(&raw[1..])
+            .trim_end_matches('\0')
+           .to_string();
+        let string_table_offset: usize = offset_str.parse().unwrap_or(0);
    
     // String table follows the symbol table: each symbol entry is 18 bytes
     let symbol_table_start = coff.pointer_to_symbol_table as usize;
     let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18);
 
     let name_start = string_table_start + string_table_offset;
-    println!("string_table_start: {:#x}", string_table_start);
-    println!("name_start: {:#x}", name_start);
+
     let end = data[name_start..]
         .iter()
         .position(|&b| b == 0)
@@ -174,25 +176,30 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
         .unwrap_or(name_start);
 
     String::from_utf8_lossy(&data[name_start..end]).to_string()
+    }
 }
 
 #[repr(C)]
 #[derive(Debug)]
 struct OptionalHeaderInfo {
+    magic_number: u16,
     section_alignment: u32,
     file_alignment: u32,
     size_of_image: u32,
     size_of_headers: u32,
+    subsystem: u16,
 }
 
 fn parse_optional_header(data: &[u8], e_lfanew: u32) -> OptionalHeaderInfo {
     let base = e_lfanew as usize + 24; // skip PE sig (4) + COFF header (20)
 
     OptionalHeaderInfo {
+        magic_number: u16::from_le_bytes(data[base .. base + 2].try_into().unwrap() ),
         section_alignment: u32::from_le_bytes(data[base + 32..base + 36].try_into().unwrap()),
         file_alignment: u32::from_le_bytes(data[base + 36..base + 40].try_into().unwrap()),
         size_of_image: u32::from_le_bytes(data[base + 56..base + 60].try_into().unwrap()),
         size_of_headers: u32::from_le_bytes(data[base + 60..base + 64].try_into().unwrap()),
+        subsystem: u16::from_le_bytes(data[base + 68..base + 70].try_into().unwrap()),
     }
 }
 
@@ -283,49 +290,60 @@ fn build_output(
 
     let file_alignment = opt_header.file_alignment;
     let header_growth = new_headers.len() * 40;
-
+  
     // 1. New SizeOfHeaders: old headers region + growth, aligned to FileAlignment
     let old_headers_end = opt_header.size_of_headers;
+    let string_table_pointer: usize = coff_header.pointer_to_symbol_table as usize;    
     let new_size_of_headers = align_up(old_headers_end + header_growth as u32, file_alignment);
     let shift = new_size_of_headers - old_headers_end; // how far ALL existing raw data moves
+    println!("string_table_pointer: {:#x}", string_table_pointer);
     println!("shifting: {:#x}", shift);
     // 2. Start building the output buffer
     let mut out = Vec::new();
-
+    let mut string_table_data: Vec<u8> = Vec::new();
+    
     // Copy everything up to the section table unchanged (DOS header, PE sig, COFF header, optional header)
     out.extend_from_slice(&efistub_data[..sect_offset]);
+ 
+    // save the string_table_data
+    string_table_data.extend_from_slice(&efistub_data[string_table_pointer..]);
+
+
 
     // 3. Write existing section headers, with PointerToRawData shifted
     for section in existing_sections {
         let patched = section.clone_with_shifted_ptr(shift); // see note below
         out.extend_from_slice(&section_header_bytes(&patched));
     }
-
-    // 4. Write new section headers (their offsets were already computed relative to
-    //    the OLD file layout's raw data — but since header growth happens at the very
-    //    start, and new sections are appended at the very end, their offsets need the
-    //    same shift applied too)
-    for header in new_headers {
-        let patched = header.clone_with_shifted_ptr(shift);
-        out.extend_from_slice(&section_header_bytes(&patched));
+   
+    // Build the shifted versions ONCE, before steps 4 and 7 both need them
+    let shifted_new_headers: Vec<SectionHeader> = new_headers
+        .iter()
+        .map(|h| h.clone_with_shifted_ptr(shift))
+        .collect();
+    
+    for header in &shifted_new_headers {
+        out.extend_from_slice(&section_header_bytes(header));
     }
 
-    // 5. Pad out to new_size_of_headers with zeros
+   
+    // Step 5: pad to new_size_of_headers (unchanged)
     while out.len() < new_size_of_headers as usize {
         out.push(0);
     }
-
+    println!("out_len(): {:#x}", out.len());
+    out.extend_from_slice(&string_table_data);
     // 6. Copy existing section raw data unchanged (just relocated as a block)
-    out.extend_from_slice(&efistub_data[old_headers_end as usize..]);
 
-    // 7. Append new section raw data, each padded to its aligned size
-    for (header, section) in new_headers.iter().zip(new_sections.iter()) {
+    out.extend_from_slice(&efistub_data[old_headers_end as usize + string_table_data.len() as usize..]);
+
+    // Step 7: use the SAME shifted headers for placement math
+    for (header, section) in shifted_new_headers.iter().zip(new_sections.iter()) {
         out.extend_from_slice(&section.data);
         let padded_size = header.size_of_raw_data as usize;
         while out.len() % file_alignment as usize != 0 {
             out.push(0);
         }
-        // ensure we match this section's declared raw size exactly
         let target_len = header.pointer_to_raw_data as usize + padded_size;
         while out.len() < target_len {
             out.push(0);
@@ -334,24 +352,25 @@ fn build_output(
 
     // 8. Patch header fields: NumberOfSections, SizeOfImage, SizeOfHeaders
     let coff_base = dos_header.e_lfanew as usize + 4;
+ 
     patch_u16(&mut out, coff_base + 2, coff_header.number_of_sections + new_headers.len() as u16);
-
+  
     // PointerToSymbolTable lives at offset +12 within the COFF header (after signature+machine+numsections+timestamp)
     if coff_header.pointer_to_symbol_table != 0 {
-        patch_u32(&mut out, coff_base + 12, coff_header.pointer_to_symbol_table);
+        patch_u32(&mut out, coff_base + 8, coff_header.pointer_to_symbol_table + shift);
     }
-    
+   
     let opt_base = dos_header.e_lfanew as usize + 24;
     
     let last_new = new_headers.last().unwrap();
- 
+
     let new_size_of_image = align_up(
             last_new.virtual_address + last_new.virtual_size,
             opt_header.section_alignment,
             );
     patch_u32(&mut out, opt_base + 56, new_size_of_image);
     patch_u32(&mut out, opt_base + 60, new_size_of_headers);
-
+  
     out
 }
 
@@ -377,11 +396,14 @@ fn main() -> std::io::Result<()> {
     let efistub_data = read_binary_file(&args.efistub)
         .expect("failed to read the EFI boot stub");
 
-    let dos_header = parse_dos_header(&efistub_data);
+    let config_data: Vec<u8> = read_binary_file(&args.xencfg)
+        .expect("failed to read confgiguration data");
+
+    let mut dos_header = parse_dos_header(&efistub_data);
     println!("Magic: {:#x}", dos_header.e_magic);
     println!("PE Header offset: {:#x}", dos_header.e_lfanew);
 
-    let coff_header = parse_coff_header(&efistub_data, dos_header.e_lfanew);
+    let mut coff_header = parse_coff_header(&efistub_data, dos_header.e_lfanew);
     println!("{:#?}", coff_header);
 
     let sect_offset = section_table_offset(dos_header.e_lfanew, &coff_header);
@@ -390,8 +412,8 @@ fn main() -> std::io::Result<()> {
     println!("Section table: {:#x} .. {:#x}", sect_offset, sect_end);
     println!("Number of sections: {}", coff_header.number_of_sections);
 
-    let opt_header = parse_optional_header(&efistub_data, dos_header.e_lfanew);
-    println!("{:#?}", opt_header);
+    let mut opt_header = parse_optional_header(&efistub_data, dos_header.e_lfanew);
+    println!("opt_header: {:#?}", opt_header);
 
     for i in 0..coff_header.number_of_sections {
         let entry_offset = sect_offset + (i as usize * 40);
@@ -402,10 +424,9 @@ fn main() -> std::io::Result<()> {
     let last = &sections[sections.len() - 1]; // assuming you've collected parsed sections into `sections: Vec<SectionHeader>`
     let last_va_end = last.virtual_address + last.virtual_size;
     let last_raw_end = last.pointer_to_raw_data + last.size_of_raw_data;
-    println!("last_raw_end: {:#x}", last_raw_end);
 
     let new_sections = vec![
-        NewSection { name: ".config".to_string(), data: fs::read(&args.xencfg).expect("read config") },
+        NewSection { name: ".config".to_string(), data: config_data.clone() },
         NewSection { name: ".kernel".to_string(), data: kernel_data.clone() },
         NewSection { name: ".ramdisk".to_string(), data: ramdisk_data.clone() },
         NewSection { name: ".ucode".to_string(), data: ucode_data.clone() },
@@ -445,6 +466,26 @@ fn main() -> std::io::Result<()> {
         &new_sections);
 
 
-    fs::write(dom0_uki, xenuki_data)?;
+    dos_header = parse_dos_header(&xenuki_data);
+    coff_header = parse_coff_header(&xenuki_data, dos_header.e_lfanew);
+    opt_header = parse_optional_header(&xenuki_data, dos_header.e_lfanew);
+    println!("opt_header: {:#?}", opt_header);
+    println!("{:#?}", coff_header);
+    for s in &sections {
+        println!(
+            "{:<10} VA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
+            section_name(s, &xenuki_data, &coff_header),
+            s.virtual_address, s.virtual_size, s.pointer_to_raw_data, s.size_of_raw_data
+        );
+    }
+    for h in &new_headers {
+        println!(
+            "{:<10}\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
+            section_name(h, &xenuki_data, &coff_header),
+            h.virtual_address, h.virtual_size, h.pointer_to_raw_data, h.size_of_raw_data
+        );
+    }
+    write_binary_file(&dom0_uki, &xenuki_data);
     Ok(())
+
 }
