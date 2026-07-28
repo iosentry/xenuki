@@ -27,9 +27,9 @@ BIOS (Basic Input Output System). It is through these standards that Secure Boot
 Secure Boot is the most widely implemented method for ensuring the integrity of low-level code spanning
 DXE and SMM all the way up the chain to Operating System kernels and device drivers. 
 
-This is accomplished through the creation of sets of crypotographic keys and certificates for the express
-purpose of establishing centralized trusted authorities with the ability to authorize and revoke new code
-signing keys with the primary purpose of maintaining tight administrative control over the code that a system
+This is accomplished through the creation of sets of X.509 certificates and crypotographic keys for the express
+purpose of establishing trusted Centralized Authorities with the ability to authorize and revoke new code
+signing keys allowing for the maintenance of tight administrative control over the code that a system
 is authorized to execute.
 
 Sadly, what was once a concern for governments and only the largest enterprises has now become a necessary
@@ -45,5 +45,15 @@ information systems.
 
 This is why Secure Boot is really not even optional in todays information climate.
 
-To Be continued....
+Secure Boot works using cryptographic checksums and signatures. Each program that is loaded by the firmware
+includes a signature and a checksum, and before allowing execution the firmware will verify that the program is
+trusted by validating the checksum and the signature. When Secure Boot is enabled on a system, any attempt to 
+execute an untrusted program will not be allowed. This stops unexpected / unauthorised code from running in the
+UEFI environment.
+
+The majority of code running in the UEFI belong to the class of bootloaders and Operating Systems, however others
+exist as well. This can include, but is not limited to, disgnostic tools, system management tools (UEFI Shell,
+fwupdate, configuration interfaces), etc.
+
+To be continued...
 
