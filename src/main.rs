@@ -29,10 +29,6 @@ struct Args {
     #[arg(short, long)]
     ramdisk: PathBuf,
 
-    /// Path to kernel cmdline.d
-//  #[arg(short, long)]
-//  cmdline: PathBuf,
-
     /// UKI output filename
     #[arg(short, long)]
     outfile: PathBuf,
@@ -149,7 +145,7 @@ fn parse_section_header(data: &[u8], offset: usize) -> SectionHeader {
     }
 }
 
-fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> String {
+/* fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> String {
     let raw = &section.name;
 
     // Short name: null-padded ASCII, no lookup needed
@@ -163,22 +159,22 @@ fn section_name(section: &SectionHeader, data: &[u8], coff: &CoffHeader) -> Stri
            .to_string();
         let string_table_offset: usize = offset_str.parse().unwrap_or(0);
    
-    // String table follows the symbol table: each symbol entry is 18 bytes
-    let symbol_table_start = coff.pointer_to_symbol_table as usize;
-    let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18);
+        // String table follows the symbol table: each symbol entry is 18 bytes
+        let symbol_table_start = coff.pointer_to_symbol_table as usize;
+        let string_table_start = symbol_table_start + (coff.number_of_symbols as usize * 18);
 
-    let name_start = string_table_start + string_table_offset;
+        let name_start = string_table_start + string_table_offset;
 
-    let end = data[name_start..]
+        let end = data[name_start..]
         .iter()
         .position(|&b| b == 0)
         .map(|p| name_start + p)
         .unwrap_or(name_start);
 
-    String::from_utf8_lossy(&data[name_start..end]).to_string()
+        return String::from_utf8_lossy(&data[name_start..end]).to_string();
     }
 }
-
+ */
 #[repr(C)]
 #[derive(Debug)]
 struct OptionalHeaderInfo {
@@ -293,23 +289,15 @@ fn build_output(
   
     // 1. New SizeOfHeaders: old headers region + growth, aligned to FileAlignment
     let old_headers_end = opt_header.size_of_headers;
-    let string_table_pointer: usize = coff_header.pointer_to_symbol_table as usize;    
     let new_size_of_headers = align_up(old_headers_end + header_growth as u32, file_alignment);
     let shift = new_size_of_headers - old_headers_end; // how far ALL existing raw data moves
-    println!("string_table_pointer: {:#x}", string_table_pointer);
-    println!("shifting: {:#x}", shift);
+
     // 2. Start building the output buffer
     let mut out = Vec::new();
-    let mut string_table_data: Vec<u8> = Vec::new();
-    
+ 
     // Copy everything up to the section table unchanged (DOS header, PE sig, COFF header, optional header)
     out.extend_from_slice(&efistub_data[..sect_offset]);
  
-    // save the string_table_data
-    string_table_data.extend_from_slice(&efistub_data[string_table_pointer..]);
-
-
-
     // 3. Write existing section headers, with PointerToRawData shifted
     for section in existing_sections {
         let patched = section.clone_with_shifted_ptr(shift); // see note below
@@ -326,16 +314,13 @@ fn build_output(
         out.extend_from_slice(&section_header_bytes(header));
     }
 
-   
     // Step 5: pad to new_size_of_headers (unchanged)
     while out.len() < new_size_of_headers as usize {
         out.push(0);
     }
-    println!("out_len(): {:#x}", out.len());
-    out.extend_from_slice(&string_table_data);
-    // 6. Copy existing section raw data unchanged (just relocated as a block)
 
-    out.extend_from_slice(&efistub_data[old_headers_end as usize + string_table_data.len() as usize..]);
+    // 6. Copy existing section raw data unchanged (just relocated as a block)
+    out.extend_from_slice(&efistub_data[old_headers_end as usize..]);
 
     // Step 7: use the SAME shifted headers for placement math
     for (header, section) in shifted_new_headers.iter().zip(new_sections.iter()) {
@@ -355,7 +340,7 @@ fn build_output(
  
     patch_u16(&mut out, coff_base + 2, coff_header.number_of_sections + new_headers.len() as u16);
   
-    // PointerToSymbolTable lives at offset +12 within the COFF header (after signature+machine+numsections+timestamp)
+    // PointerToSymbolTable lives at offset +8 within the COFF header (after signature+machine+numsections+timestamp)
     if coff_header.pointer_to_symbol_table != 0 {
         patch_u32(&mut out, coff_base + 8, coff_header.pointer_to_symbol_table + shift);
     }
@@ -379,9 +364,6 @@ fn main() -> std::io::Result<()> {
 
     let mut sections: Vec<SectionHeader> = Vec::new();
 
-/*    let cmdline = build_cmdline(&args.cmdline)
-      .expect ("failed to read the cmdline.d directory"); */
-
     let dom0_uki: PathBuf = args.outfile;
 
     let kernel_data = read_binary_file(&args.kernel)
@@ -399,21 +381,13 @@ fn main() -> std::io::Result<()> {
     let config_data: Vec<u8> = read_binary_file(&args.xencfg)
         .expect("failed to read confgiguration data");
 
-    let mut dos_header = parse_dos_header(&efistub_data);
-    println!("Magic: {:#x}", dos_header.e_magic);
-    println!("PE Header offset: {:#x}", dos_header.e_lfanew);
+    let dos_header = parse_dos_header(&efistub_data);
 
-    let mut coff_header = parse_coff_header(&efistub_data, dos_header.e_lfanew);
-    println!("{:#?}", coff_header);
-
+    let coff_header = parse_coff_header(&efistub_data, dos_header.e_lfanew);
+  
     let sect_offset = section_table_offset(dos_header.e_lfanew, &coff_header);
-    println!("sect_offset: {:#x}", sect_offset);
-    let sect_end = sect_offset + (coff_header.number_of_sections as usize * 40); // each section header is 40 bytes
-    println!("Section table: {:#x} .. {:#x}", sect_offset, sect_end);
-    println!("Number of sections: {}", coff_header.number_of_sections);
 
-    let mut opt_header = parse_optional_header(&efistub_data, dos_header.e_lfanew);
-    println!("opt_header: {:#?}", opt_header);
+    let opt_header = parse_optional_header(&efistub_data, dos_header.e_lfanew);
 
     for i in 0..coff_header.number_of_sections {
         let entry_offset = sect_offset + (i as usize * 40);
@@ -423,7 +397,7 @@ fn main() -> std::io::Result<()> {
     // find the last existing section (.reloc) to compute where new ones begin
     let last = &sections[sections.len() - 1]; // assuming you've collected parsed sections into `sections: Vec<SectionHeader>`
     let last_va_end = last.virtual_address + last.virtual_size;
-    let last_raw_end = last.pointer_to_raw_data + last.size_of_raw_data;
+    let last_raw_end = align_up(efistub_data.len() as u32, opt_header.file_alignment);
 
     let new_sections = vec![
         NewSection { name: ".config".to_string(), data: config_data.clone() },
@@ -440,21 +414,6 @@ fn main() -> std::io::Result<()> {
         opt_header.file_alignment,
     );
 
-    for s in &sections {
-        println!(
-            "{:<10} VA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
-            section_name(s, &efistub_data, &coff_header),
-            s.virtual_address, s.virtual_size, s.pointer_to_raw_data, s.size_of_raw_data
-        );
-    }
-    for h in &new_headers {
-        println!(
-            "{:<10}\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
-            section_name(h, &efistub_data, &coff_header),
-            h.virtual_address, h.virtual_size, h.pointer_to_raw_data, h.size_of_raw_data
-        );
-    }
-
     let xenuki_data = build_output(
         &efistub_data, 
         &dos_header, 
@@ -465,26 +424,6 @@ fn main() -> std::io::Result<()> {
         &new_headers,
         &new_sections);
 
-
-    dos_header = parse_dos_header(&xenuki_data);
-    coff_header = parse_coff_header(&xenuki_data, dos_header.e_lfanew);
-    opt_header = parse_optional_header(&xenuki_data, dos_header.e_lfanew);
-    println!("opt_header: {:#?}", opt_header);
-    println!("{:#?}", coff_header);
-    for s in &sections {
-        println!(
-            "{:<10} VA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
-            section_name(s, &xenuki_data, &coff_header),
-            s.virtual_address, s.virtual_size, s.pointer_to_raw_data, s.size_of_raw_data
-        );
-    }
-    for h in &new_headers {
-        println!(
-            "{:<10}\tVA={:#x} VSize={:#x} RawPtr={:#x} RawSize={:#x}",
-            section_name(h, &xenuki_data, &coff_header),
-            h.virtual_address, h.virtual_size, h.pointer_to_raw_data, h.size_of_raw_data
-        );
-    }
     write_binary_file(&dom0_uki, &xenuki_data);
     Ok(())
 
