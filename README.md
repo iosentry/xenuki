@@ -1,7 +1,7 @@
 #
 #   XenUKI: A binary packer for Xen Hypervisor virtualization host systems.
 #
-#   Author: Roman (Sideshvara) Hunt [iosentry]
+#   Author: Roman Hunt (Siddhesh) [iosentry]
 #   Date: Mon Jul 27 06:28:38 PM CDT 2026
 #   Programming Language: RUST
 #
