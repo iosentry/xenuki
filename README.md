@@ -1,58 +1,39 @@
-#
-#   XenUKI: A binary packer for Xen Hypervisor virtualization host systems.
-#
-#   Author: Roman Hunt [iosentry]
-#   Programming Language: RUST
-#
+# XenUKI
 
-The task of providing a method through which modern computing systems might ensure the integrity
-of its lowest level, and thus, most priviledged code has been a long process that has taken decades
-of work and architectural design to implement. 
+A Rust tool that packs the Xen hypervisor, a Linux Dom0 kernel, and their
+initramfs images into a single Unified Kernel Image (UKI) — a monolithic
+PE32+ EFI executable that UEFI Secure Boot can verify directly.
 
-The task required countless hardware and software components and tools dedicated to the task ranging
-from the creation and management of code-signing cryptographic keys to the complete disposal of the
-legacy BIOS system that PC class hardware has depended on for decades. 
+## The problem
 
-This code is yet another tool in that arsenal...
+Xen doesn't boot like a normal Secure Boot–compliant kernel. It loads via
+multiboot2, with the hypervisor, Dom0 kernel, and ramdisk as separate
+files, glued together by a bootloader (GRUB, or a similar multiboot2-aware
+loader). To get that chain under Secure Boot, you end up trusting the
+bootloader itself as a stand-in for the hypervisor — signing GRUB, not Xen.
+That's an extra link in the trust chain that doesn't need to exist, and it
+means the actual privileged code (Xen) is never the thing UEFI is directly
+attesting.
 
-UEFI Secure Boot
+UKIs solve this for regular Linux systems by bundling kernel + initramfs +
+cmdline into one signed PE binary that UEFI boots straight from the EFI
+System Partition, no bootloader required. Xen doesn't fit that model
+out of the box, because it isn't a single Linux kernel image — it's a
+hypervisor plus a Dom0 kernel plus a ramdisk.
 
-UEFI aka the Unified Extensible Firmware Interface is the modern day solution for providing a secure,
-extensible, and robust platform through which the murky realm of firmware (the blurred line between
-hardware and software) might be managed sanely. This has been accomplished via working groups and the 
-creation of open standards that provide some semblance of sanity to what was once the Wild West of the
-BIOS (Basic Input Output System). It is through these standards that Secure Boot becomes possible.
+## What XenUKI does
 
-Secure Boot is the most widely implemented method for ensuring the integrity of low-level code spanning
-DXE and SMM all the way up the chain to Operating System kernels and device drivers. 
+XenUKI builds the same kind of single, signable EFI binary, but for the
+Xen + Dom0 pair:
 
-This is accomplished through the creation of sets of X.509 certificates and crypotographic keys for the express
-purpose of establishing trusted Centralized Authorities with the ability to authorize and revoke new code
-signing keys allowing for the maintenance of tight administrative control over the code that a system
-is authorized to execute.
+- Combines the Xen hypervisor, Dom0 kernel, and initramfs into one image
+- Produces a PE32+ EFI executable that's Secure Boot compliant
+- Removes the bootloader as a separate trust anchor — UEFI verifies the
+  signature on the actual hypervisor/kernel bundle, not an intermediary
 
-Sadly, what was once a concern for governments and only the largest enterprises has now become a necessary
-consideration for even the most mundane and average computer users. In an ever increasingly connected world
-it has come to a point where even children are more often than not carrying a device on their person with
-active Internet connectivity maintained 24/7 && 365, as they say. This ease of access if a double-edged sword.
-Just as sources of information and learning are now constantly only a few keystrokes away so are threats to
-individuals property, finances, and families.
+## Status
 
-The threat of persistent and dangerous malwares is also increasing at alarming rates with no relief in sight.
-As these threats increase in number they also increase in complexity, and skill at establishing persistence in
-information systems. 
-
-This is why Secure Boot is really not even optional in todays information climate.
-
-Secure Boot works using cryptographic checksums and signatures. Each program that is loaded by the firmware
-includes a signature and a checksum, and before allowing execution the firmware will verify that the program is
-trusted by validating the checksum and the signature. When Secure Boot is enabled on a system, any attempt to 
-execute an untrusted program will not be allowed. This stops unexpected / unauthorised code from running in the
-UEFI environment.
-
-The majority of code running in the UEFI belong to the class of bootloaders and Operating Systems, however others
-exist as well. This can include, but is not limited to, disgnostic tools, system management tools (UEFI Shell,
-fwupdate, configuration interfaces), etc.
-
-To be continued...
+Early stage. Current work is split between validating packer output
+against the UKI spec, and building out a VM-based test methodology for
+boot-level validation (Secure Boot verification and TPM measurements).
 
